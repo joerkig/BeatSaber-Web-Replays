@@ -65,7 +65,6 @@
     <link rel="stylesheet" href="assets/img/all.css">
   </head>
   <body id="body" class="showControls">
-    {% include './templates/controls.html' %}
     {% include './animations.html' %}
     <a-scene
       settings
@@ -273,6 +272,8 @@
         bind__orthographic-camera="active: settings.orthographicTopEnabled; far: settings.orthographicTopFar; frustum: settings.orthographicTopFrustum">
       </a-entity>
     </a-scene>
+
+    {% include './templates/controls.html' %}
 
     <span id="iframeUrl"></span>
   </body>
