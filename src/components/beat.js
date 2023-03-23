@@ -1,10 +1,18 @@
-import {getHorizontalPosition, getVerticalPosition, NoteErrorType, SWORD_OFFSET, BezierCurve} from '../utils';
+import {
+	getHorizontalPosition,
+	getVerticalPosition,
+	highestJumpPosYForLineLayer,
+	NoteErrorType,
+	SWORD_OFFSET,
+	BezierCurve,
+	rotateAboutPoint,
+	NoteLineLayer,
+	LerpUnclamped,
+} from '../utils';
 const COLORS = require('../constants/colors.js');
 
 const auxObj3D = new THREE.Object3D();
 const collisionZThreshold = -2.6;
-const BEAT_WARMUP_ROTATION_CHANGE = Math.PI / 5;
-const BEAT_WARMUP_ROTATION_TIME = 0.75;
 const DESTROYED_SPEED = 1.0;
 const ONCE = {once: true};
 
@@ -27,6 +35,38 @@ const RandomRotations = [
 	new THREE.Vector3(0.1306983, -0.2508438, -0.9591639),
 ];
 
+var saberEls;
+var headset;
+var replayLoader;
+var settings;
+var song;
+
+var mineParticles;
+var wrongElLeft;
+var wrongElRight;
+var missElLeft;
+var missElRight;
+var hitSound;
+
+function initStatic(sceneEl) {
+	saberEls = sceneEl.querySelectorAll('[saber-controls]');
+	headset = sceneEl.querySelectorAll('.headset')[0];
+	replayLoader = sceneEl.components['replay-loader'];
+	settings = sceneEl.components['settings'];
+	song = sceneEl.components.song;
+	hitSound = sceneEl.components['beat-hit-sound'];
+
+	mineParticles = document.getElementById('mineParticles');
+	wrongElLeft = document.getElementById('wrongLeft');
+	wrongElRight = document.getElementById('wrongRight');
+	missElLeft = document.getElementById('missLeft');
+	missElRight = document.getElementById('missRight');
+}
+
+function InOutQuad(t) {
+	return t >= 0.5 ? (4.0 - 2.0 * t) * t - 1.0 : 2 * t * t;
+}
+
 /**
  * Bears, beats, Battlestar Galactica.
  * Create beat from pool, collision detection, movement, scoring.
@@ -34,37 +74,56 @@ const RandomRotations = [
 AFRAME.registerComponent('beat', {
 	schema: {
 		index: {default: 0},
-		anticipationPosition: {default: 0},
+		type: {default: 'arrow', oneOf: ['arrow', 'dot', 'mine', 'spline']},
 		color: {default: 'red', oneOf: ['red', 'blue']},
 		cutDirection: {default: 'down'},
-		headCutDirection: {default: 'down'},
 		rotationOffset: {default: 0},
-		debug: {default: false},
 		horizontalPosition: {default: 1},
-		size: {default: 0.4},
-		speed: {default: 8.0},
-		type: {default: 'arrow', oneOf: ['arrow', 'dot', 'mine', 'spline']},
 		verticalPosition: {default: 1},
+		size: {default: 0.4},
 		warmupPosition: {default: 0},
-		time: {default: 0},
+		time: {default: -1},
 		noteId: {default: 0},
 		noteIdWithScoring: {default: 0},
-		anticipationTime: {default: 0},
-		warmupTime: {default: 0},
+
+		// Z Movement
+		time: {default: 0},
+		speed: {default: 8.0},
+		halfJumpPosition: {default: 0},
+		warmupPosition: {default: 0},
+		halfJumpDuration: {default: 0},
+		moveTime: {default: 0},
 		warmupSpeed: {default: 0},
+		beforeJumpLineLayer: {default: 0},
+
+		// Colors
 		blue: {default: COLORS.BEAT_BLUE},
 		red: {default: COLORS.BEAT_RED},
+
+		// V3
+		headCutDirection: {default: 'down'},
 		tailHorizontalPosition: {default: 0},
 		tailVerticalPosition: {default: 0},
 		sliceCount: {default: 0},
 		sliceIndex: {default: 0},
 		tailTime: {default: 0},
 		squishAmount: {default: 0},
+
+		// 90/360
 		spawnRotation: {default: 0},
+
+		// Rabbit jump animation
+		flip: {default: false},
+		flipHorizontalPosition: {default: 0},
+		flipYSide: {default: 0},
+
 		// Loading cubes
 		loadingCube: {default: false},
 		visible: {default: true},
 		animating: {default: true},
+
+		// Debug
+		debug: {default: false},
 	},
 
 	cutColor: {
@@ -91,8 +150,6 @@ AFRAME.registerComponent('beat', {
 		sliderchainblue: 'dotBlueObjTemplate',
 	},
 
-	orientations: [180, 0, 270, 90, 225, 135, 315, 45, 0],
-
 	rotations: {
 		up: 180,
 		down: 0,
@@ -107,7 +164,7 @@ AFRAME.registerComponent('beat', {
 	init: function () {
 		this.beatBoundingBox = new THREE.Box3();
 		this.beatBigBoundingBox = new THREE.Box3();
-		this.currentRotationWarmupTime = 0;
+		this.currentRotationmoveTime = 0;
 		this.cutDirection = new THREE.Vector3();
 		this.destroyed = false;
 		this.gravityVelocity = 0;
@@ -119,27 +176,13 @@ AFRAME.registerComponent('beat', {
 		this.returnToPoolTimeStart = undefined;
 		this.rotationAxis = new THREE.Vector3();
 
-		this.saberEls = this.el.sceneEl.querySelectorAll('[saber-controls]');
-		this.headset = this.el.sceneEl.querySelectorAll('.headset')[0];
-		this.replayLoader = this.el.sceneEl.components['replay-loader'];
-		this.settings = this.el.sceneEl.components['settings'];
-		this.song = this.el.sceneEl.components.song;
-
 		this.scoreEl = null;
-		this.scoreElTime = undefined;
-		this.startPositionZ = undefined;
 		this.rightCutPlanePoints = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
 		this.leftCutPlanePoints = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
 
-		this.mineParticles = document.getElementById('mineParticles');
-		this.wrongElLeft = document.getElementById('wrongLeft');
-		this.wrongElRight = document.getElementById('wrongRight');
-		this.missElLeft = document.getElementById('missLeft');
-		this.missElRight = document.getElementById('missRight');
-		this.particles = document.getElementById('saberParticles');
-
-		this.superCuts = document.querySelectorAll('.superCutFx');
-		this.superCutIdx = 0;
+		if (!replayLoader) {
+			initStatic(this.el.sceneEl);
+		}
 
 		this.explodeEventDetail = {position: new THREE.Vector3(), rotation: new THREE.Euler()};
 		this.saberColors = {right: 'blue', left: 'red'};
@@ -147,22 +190,18 @@ AFRAME.registerComponent('beat', {
 
 		this.onEndStroke = this.onEndStroke.bind(this);
 
-		this.rotEuler = new THREE.Euler();
 		this.strokeDirectionVector = new THREE.Vector3();
 		this.bladeTipPosition = new THREE.Vector3();
 		this.startStrokePosition = new THREE.Vector3();
+		this.startRotation = new THREE.Quaternion(0, 0, 0, 1);
 
 		this.initBlock();
-		if (this.data.type === 'mine') {
-			this.initMineFragments();
-		} else {
-			this.initFragments();
-		}
 	},
 
 	update: function (oldData) {
+		if (this.data.time == -1 && !this.data.loadingCube) return;
+
 		this.updateBlock();
-		this.updateFragments();
 
 		if (this.data.type === 'mine') {
 			this.poolName = `pool__beat-mine`;
@@ -187,7 +226,6 @@ AFRAME.registerComponent('beat', {
 	},
 
 	play: function () {
-		// this.glow = this.el.sceneEl.components['pool__beat-glow'].requestEntity();
 		if (!this.hitSaberEl) {
 			this.blockEl.object3D.visible = true;
 			this.destroyed = false;
@@ -195,65 +233,99 @@ AFRAME.registerComponent('beat', {
 		}
 	},
 
+	getZPos: function (start, end, headOffsetZ, t) {
+		return LerpUnclamped(start + headOffsetZ * Math.min(1, t * 2), end + headOffsetZ, t);
+	},
+
 	updatePosition: function () {
 		const el = this.el;
 		const data = this.data;
-		var position = el.object3D.position;
-		const song = this.song;
+		const disableJumps = settings.settings.disableJumps;
 
+		var position = el.object3D.position;
 		var newPosition = 0;
 
-		var timeOffset = data.time - song.getCurrentTime() - data.anticipationTime - data.warmupTime;
+		const songTime = song.getCurrentTime();
 
-		var t = timeOffset / -data.anticipationTime - data.warmupTime;
+		var num1 = songTime - (data.time - data.halfJumpDuration);
+		var t = num1 / (data.halfJumpDuration * 2);
 
-		var currentRotationWarmupTime = timeOffset;
+		var newX = t < 0 ? this.startPos.x : t >= 0.25 ? this.endPos.x : this.startPos.x + (this.endPos.x - this.startPos.x) * InOutQuad(t * 4);
+		var newY = 0;
 
-		if (timeOffset <= -data.warmupTime) {
-			newPosition = data.anticipationPosition;
-			timeOffset += data.warmupTime;
-			newPosition += -timeOffset * data.speed;
+		var timeOffset = data.time - songTime - data.halfJumpDuration - data.moveTime;
+		if (timeOffset <= -data.moveTime) {
+			newPosition = this.getZPos(
+				data.halfJumpPosition - SWORD_OFFSET,
+				-data.halfJumpPosition - SWORD_OFFSET,
+				headset.object3D.position.z,
+				t
+			);
+
+			newY = this.startPos.y + this.startVerticalVelocity * num1 - this.gravity * num1 * num1 * 0.5;
 		} else {
-			newPosition = data.anticipationPosition + data.warmupPosition + data.warmupSpeed * -timeOffset;
+			newY = this.startPos.y;
+			newPosition = data.halfJumpPosition + data.warmupPosition + data.warmupSpeed * -timeOffset - SWORD_OFFSET;
 		}
 
-		newPosition += this.headset.object3D.position.z;
 		if (this.chainOffset) {
 			newPosition -= this.chainOffset;
 		}
+
+		if (disableJumps) {
+			newX = this.endPos.x;
+			newY = this.endPos.y;
+		}
+
+		position.y = newY;
+
 		if (data.spawnRotation == 0) {
 			position.z = newPosition;
+			position.x = newX;
 		} else {
 			var direction = this.startPosition.clone().sub(this.origin).normalize();
 			el.object3D.position.copy(direction.multiplyScalar(-newPosition).add(this.origin));
 			position = el.object3D.position;
-			this.currentPosition = newPosition;
+			const xDiff = newX - this.endPos.x;
+			position.z -= xDiff * Math.cos((90 - data.spawnRotation) * 0.0175);
+			position.x += xDiff * Math.sin((90 - data.spawnRotation) * 0.0175);
 		}
 
 		this.currentPositionZ = newPosition;
 
-		if (data.type != 'sliderchain' && data.type != 'sliderhead' && currentRotationWarmupTime <= -data.warmupTime) {
-			currentRotationWarmupTime += data.warmupTime;
-
-			let warmupRotationTime = BEAT_WARMUP_ROTATION_TIME / (20 / data.anticipationPosition); // Closer anticipation - faster the rotation.
-
-			const progress =
-				warmupRotationTime <= currentRotationWarmupTime
-					? AFRAME.ANIME.easings.easeOutBack(currentRotationWarmupTime / warmupRotationTime)
-					: 1.0;
-			el.object3D.rotation.z = this.rotationZStart + progress * this.rotationZChange;
+		if (!disableJumps && this.yAvoidance != 0 && t > 0 && t < 0.25) {
+			position.y += (0.5 - Math.cos(t * 8.0 * Math.PI) * 0.5) * this.yAvoidance;
 		}
 
-		if (t >= 0.5 && t <= 1 && data.type != 'mine' && data.spawnRotation == 0) {
-			var headPseudoLocalPos = this.headset.object3D.position.clone();
+		if (t >= 0 && t <= 0.5 && data.type != 'mine') {
+			var a = this.endRotation.clone();
+			if (!disableJumps) {
+				if (t >= 0.125) {
+					a = this.middleRotation.clone().slerp(this.endRotation, Math.sin((t - 0.125) * Math.PI * 2.0));
+				} else {
+					a = this.startRotation.clone().slerp(this.middleRotation, Math.sin(t * Math.PI * 4.0));
+				}
+			}
+
+			var headPseudoLocalPos = headset.object3D.position.clone();
 			var localPosition = position.clone();
 
 			headPseudoLocalPos.y = THREE.Math.lerp(headPseudoLocalPos.y, localPosition.y, 0.8);
-			this.rotEuler.copy(el.object3D.rotation);
+
+			el.object3D.up = new THREE.Vector3(-Math.sin(this.zRotation), Math.cos(this.zRotation), 0);
 			el.object3D.lookAt(headPseudoLocalPos);
-			el.object3D.rotation.x = THREE.Math.lerp(this.rotEuler.x, el.object3D.rotation.x, 0.4 * t);
-			el.object3D.rotation.y = THREE.Math.lerp(this.rotEuler.y, el.object3D.rotation.y, 0.4 * t);
-			el.object3D.rotation.z = this.rotEuler.z;
+
+			if (data.spawnRotation == 0) {
+				let rotation = new THREE.Euler().setFromQuaternion(a.clone().slerp(el.object3D.quaternion, t * 2));
+				el.object3D.rotation.set(rotation.x, rotation.y, rotation.z);
+			} else {
+				// TODO: figure out the look on player in 90/360
+				const inverseWorldRotation = new THREE.Vector3(0, -data.spawnRotation, 0);
+				let rotation = new THREE.Euler().setFromQuaternion(a);
+				el.object3D.rotation.set(rotation.x, rotation.y, rotation.z);
+			}
+		} else if (disableJumps) {
+			el.object3D.rotation.set(this.endRotationEuler.x, this.endRotationEuler.y, this.endRotationEuler.z);
 		}
 	},
 
@@ -274,17 +346,20 @@ AFRAME.registerComponent('beat', {
 			return;
 		}
 
-		if (!this.settings.realHitsounds) {
+		if (!settings.realHitsounds) {
 			this.checkStaticHitsound();
 			if (this.hitSoundState == SOUND_STATE.waitingForHitSound) {
 				return;
 			}
 		}
 		const el = this.el;
-		const position = el.object3D.position;
 
 		if (this.destroyed) {
-			this.tockDestroyed(timeDelta);
+			if (!settings.settings.reducedDebris) {
+				this.tockDestroyed(timeDelta);
+			} else if (this.partRightEl) {
+				this.returnToPool(true);
+			}
 			// Check to remove score entity from pool.
 		} else {
 			if (!this.replayNote.cutPoint && this.currentPositionZ > collisionZThreshold) {
@@ -298,11 +373,11 @@ AFRAME.registerComponent('beat', {
 				this.replayNote.score != NoteErrorType.Miss &&
 				((this.replayNote.cutPoint &&
 					this.currentPositionZ - -1 * this.replayNote.cutPoint.z > -0.05 &&
-					(this.settings.settings.reducedDebris || !this.checkCollisions())) ||
-					this.song.getCurrentTime() > this.replayNote.time)
+					(settings.settings.reducedDebris || !this.checkCollisions())) ||
+					song.getCurrentTime() > this.replayNote.time)
 			) {
 				this.showScore();
-				this.destroyBeat(this.saberEls[this.replayNote.colorType]);
+				this.destroyBeat(saberEls[this.replayNote.colorType]);
 				this.postScoreEvent();
 			} else {
 				this.backToPool = this.currentPositionZ >= 2;
@@ -311,7 +386,7 @@ AFRAME.registerComponent('beat', {
 				}
 			}
 
-			if (this.data.type === 'mine' && this.replayNote.totalScore != -1 && this.song.getCurrentTime() > this.replayNote.time) {
+			if (this.data.type === 'mine' && this.replayNote.totalScore != -1 && song.getCurrentTime() > this.replayNote.time) {
 				if (this.replayNote) {
 					this.postScoreEvent();
 				}
@@ -320,34 +395,13 @@ AFRAME.registerComponent('beat', {
 			}
 		}
 		if (this.hitboxObject) {
-			this.hitboxObject.visible = !this.destroyed && this.settings.settings.showHitboxes;
+			this.hitboxObject.visible = !this.destroyed && settings.settings.showHitboxes;
 		}
 		if (this.smallHitObject) {
-			this.smallHitObject.visible = !this.destroyed && this.settings.settings.showHitboxes;
+			this.smallHitObject.visible = !this.destroyed && settings.settings.showHitboxes;
 		}
 
 		this.returnToPool();
-	},
-
-	// obj - your object (THREE.Object3D or derived)
-	// point - the point of rotation (THREE.Vector3)
-	// axis - the axis of rotation (normalized THREE.Vector3)
-	// theta - radian value of rotation
-	// pointIsWorld - boolean indicating the point is in world coordinates (default = false)
-	rotateAboutPoint: function (obj, point, axis, theta, pointIsWorld) {
-		pointIsWorld = pointIsWorld === undefined ? false : pointIsWorld;
-
-		if (pointIsWorld) {
-			obj.parent.localToWorld(obj.position); // compensate for world coordinate
-		}
-
-		obj.position.sub(point); // remove the offset
-		obj.position.applyAxisAngle(axis, theta); // rotate the POSITION
-		obj.position.add(point); // re-add the offset
-
-		if (pointIsWorld) {
-			obj.parent.worldToLocal(obj.position); // undo world coordinates compensation
-		}
 	},
 
 	/**
@@ -357,18 +411,27 @@ AFRAME.registerComponent('beat', {
 		const data = this.data;
 		const el = this.el;
 
-		let origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition), getVerticalPosition(data.verticalPosition), 0);
-		this.currentPosition = data.anticipationPosition + data.warmupPosition;
-		// Set position.
+		if (!settings.settings.reducedDebris) {
+			if (this.data.type === 'mine' && !this.mineBroken) {
+				this.initMineFragments();
+			} else if (!this.partRightEl) {
+				this.initFragments();
+			}
+		}
 
+		if (this.mineBroken || this.partRightEl) {
+			this.updateFragments();
+		}
+
+		// Set position.
 		if (data.type == 'sliderchain' || data.type == 'sliderhead') {
-			var t = data.sliceIndex / data.sliceCount;
+			var t = (data.sliceIndex / (data.sliceCount - 1)) * data.squishAmount;
 
 			const headX = getHorizontalPosition(data.horizontalPosition);
-			const headY = getVerticalPosition(data.verticalPosition);
+			const headY = highestJumpPosYForLineLayer(data.verticalPosition);
 
 			const tailX = getHorizontalPosition(data.tailHorizontalPosition);
-			const tailY = getVerticalPosition(data.tailVerticalPosition);
+			const tailY = highestJumpPosYForLineLayer(data.tailVerticalPosition);
 
 			const p2 = new THREE.Vector2(tailX - headX, tailY - headY);
 			const magnitude = p2.length();
@@ -376,56 +439,85 @@ AFRAME.registerComponent('beat', {
 			const f = THREE.Math.degToRad(this.rotations[data.headCutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0));
 			const p1 = new THREE.Vector2(Math.sin(f), -Math.cos(f)).multiplyScalar(0.5 * magnitude);
 
-			var curve = BezierCurve(new THREE.Vector2(0.0, 0.0), p1, p2, t * data.squishAmount);
+			var curve = BezierCurve(new THREE.Vector2(0.0, 0.0), p1, p2, t);
 			const pos = curve[0];
-			// const tangent = curve[1];
+			const tangent = curve[1];
 
 			const timeDiff = (data.tailTime - data.time) * t * data.speed;
 			this.chainOffset = timeDiff;
 
-			el.object3D.position.set(pos.x + headX, pos.y + headY, data.anticipationPosition + data.warmupPosition - timeDiff);
-			el.object3D.rotation.set(
-				0,
-				0,
-				THREE.Math.degToRad(this.rotations[data.headCutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0))
-			); // + signedAngle(new THREE.Vector2(0.0, -1), tangent)
-		} else {
-			if (data.spawnRotation != 0) {
-				el.object3D.rotation.order = 'YZX';
-			}
-			el.object3D.position.set(
-				getHorizontalPosition(data.horizontalPosition),
-				getVerticalPosition(data.verticalPosition),
-				data.anticipationPosition + data.warmupPosition
+			this.startPos = new THREE.Vector3(
+				headX,
+				getVerticalPosition(0) + pos.y,
+				data.halfJumpPosition + data.warmupPosition - timeDiff - SWORD_OFFSET
 			);
-			el.object3D.rotation.set(
-				0,
-				0,
-				THREE.Math.degToRad(this.rotations[data.cutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0))
+			this.endPos = new THREE.Vector3(pos.x + headX, pos.y + headY, -SWORD_OFFSET);
+
+			el.object3D.position.copy(this.startPos);
+			el.object3D.rotation.set(0, 0, 0);
+
+			this.zRotation = Math.atan2(tangent.x, -tangent.y) + THREE.Math.degToRad(this.data.rotationOffset ? this.data.rotationOffset : 0.0);
+			const endRotation = new THREE.Euler(0, data.spawnRotation * 0.0175, this.zRotation, data.spawnRotation != 0 ? 'YZX' : 'YXZ');
+
+			this.endRotationEuler = endRotation;
+			this.endRotation = new THREE.Quaternion().setFromEuler(endRotation);
+			this.middleRotation = new THREE.Quaternion().setFromEuler(endRotation);
+			this.gravity = this.noteJumpGravityForLineLayer(data.verticalPosition, 0);
+		} else {
+			this.startPos = new THREE.Vector3(
+				data.flip ? getHorizontalPosition(data.flipHorizontalPosition) : getHorizontalPosition(data.horizontalPosition),
+				getVerticalPosition(data.beforeJumpLineLayer),
+				data.halfJumpPosition + data.warmupPosition - SWORD_OFFSET
 			);
 
-			// Set up rotation warmup.
-			this.startRotationZ = this.el.object3D.rotation.z;
-			this.currentRotationWarmupTime = 0;
-			this.rotationZChange = BEAT_WARMUP_ROTATION_CHANGE;
-			if (Math.random > 0.5) {
-				this.rotationZChange *= -1;
-			}
-			this.el.object3D.rotation.z -= this.rotationZChange;
-			this.rotationZStart = this.el.object3D.rotation.z;
+			this.endPos = new THREE.Vector3(
+				getHorizontalPosition(data.horizontalPosition),
+				highestJumpPosYForLineLayer(data.verticalPosition),
+				-SWORD_OFFSET
+			);
+
+			el.object3D.position.copy(this.startPos);
+			el.object3D.rotation.set(0, 0, 0);
+
+			var index = Math.abs(Math.round(data.time * 10.0 + this.endPos.x * 2.0 + this.endPos.y * 2.0) % RandomRotations.length);
+			this.zRotation = THREE.Math.degToRad(this.rotations[data.cutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0));
+
+			const endRotation = new THREE.Euler(0, data.spawnRotation * 0.0175, this.zRotation, data.spawnRotation != 0 ? 'YZX' : 'YXZ');
+			const randomRotation = RandomRotations[index];
+			const middleRotation = new THREE.Euler(
+				THREE.Math.degToRad(randomRotation.x * 20) + endRotation.x,
+				THREE.Math.degToRad(randomRotation.y * 20) + endRotation.y,
+				THREE.Math.degToRad(randomRotation.z * 20) + endRotation.z,
+				data.spawnRotation != 0 ? 'YZX' : 'YXZ'
+			);
+
+			this.endRotationEuler = endRotation;
+			this.endRotation = new THREE.Quaternion().setFromEuler(endRotation);
+			this.middleRotation = new THREE.Quaternion().setFromEuler(middleRotation);
+			this.gravity = this.noteJumpGravityForLineLayer(data.verticalPosition, data.beforeJumpLineLayer);
 		}
 
 		if (data.spawnRotation) {
 			let axis = new THREE.Vector3(0, 1, 0);
 			let theta = data.spawnRotation * 0.0175;
+			let origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition), getVerticalPosition(data.verticalPosition), 0);
 
 			origin.applyAxisAngle(axis, theta);
 			this.origin = origin;
 
-			this.rotateAboutPoint(el.object3D, new THREE.Vector3(0, 0, this.headset.object3D.position.z), axis, theta, true);
+			rotateAboutPoint(el.object3D, new THREE.Vector3(0, 0, headset.object3D.position.z), axis, theta, true);
+
 			el.object3D.lookAt(origin);
 			this.startPosition = el.object3D.position.clone();
+			this.startRotation = el.object3D.quaternion.clone();
 		}
+
+		if (data.flip) {
+			this.yAvoidance = data.flipYSide <= 0.0 ? data.flipYSide * 0.15 : data.flipYSide * 0.45;
+		} else {
+			this.yAvoidance = 0;
+		}
+		this.startVerticalVelocity = this.gravity * data.halfJumpDuration;
 
 		// Reset the state properties.
 		this.returnToPoolTimeStart = undefined;
@@ -436,10 +528,10 @@ AFRAME.registerComponent('beat', {
 		this.replayNote = null;
 		if (data.type == 'mine') {
 			// Reset mine.
-			this.blockEl.getObject3D('mesh').material = this.el.sceneEl.systems.materials['mineMaterial' + this.data.color];
-			this.resetMineFragments();
+			// this.blockEl.getObject3D('mesh').material = this.el.sceneEl.systems.materials['mineMaterial' + this.data.color];
+			// this.resetMineFragments();
 
-			const bombs = this.replayLoader.bombs;
+			const bombs = replayLoader.bombs;
 			if (bombs) {
 				for (var i = 0; i < bombs.length; i++) {
 					if (
@@ -453,7 +545,7 @@ AFRAME.registerComponent('beat', {
 				}
 			}
 		} else {
-			const notes = this.replayLoader.allStructs;
+			const notes = replayLoader.allStructs;
 			const index = this.data.index;
 			var result;
 			for (var i = 0; i < notes.length; i++) {
@@ -472,7 +564,7 @@ AFRAME.registerComponent('beat', {
 			};
 		}
 
-		if (this.settings.settings.highlightErrors && this.replayNote && this.replayNote.score < 0) {
+		if (settings.settings.highlightErrors && this.replayNote && this.replayNote.score < 0) {
 			if (data.type == 'mine') {
 				this.blockEl.getObject3D('mesh').material = this.el.sceneEl.systems.materials['mineMaterialyellow'];
 			} else {
@@ -480,31 +572,32 @@ AFRAME.registerComponent('beat', {
 			}
 		}
 
-		const replay = this.replayLoader.replay;
+		const replay = replayLoader.replay;
 		const modifiers = replay.info.modifiers;
 
-		if (modifiers.includes('GN') && this.settings.settings.showNoteModifierVisuals) {
+		if (modifiers.includes('GN') && settings.settings.showNoteModifierVisuals) {
 			this.blockEl.setAttribute('material', 'visible: ' + (this.data.index == 0));
 		} else {
 			this.blockEl.setAttribute('material', 'visible: true');
 		}
-		if ((modifiers.includes('GN') || modifiers.includes('DA')) && this.settings.settings.showNoteModifierVisuals) {
+		if ((modifiers.includes('GN') || modifiers.includes('DA')) && settings.settings.showNoteModifierVisuals) {
 			const signMaterial = this.el.sceneEl.systems.materials.beatSignMaterial;
-			signMaterial.uniforms.start.value = data.anticipationPosition + (this.headset.object3D.position.z - data.anticipationPosition) * 0.3;
-			signMaterial.uniforms.finish.value = data.anticipationPosition + (this.headset.object3D.position.z - data.anticipationPosition) * 0.7;
+			signMaterial.uniforms.start.value = data.halfJumpPosition + (headset.object3D.position.z - data.halfJumpPosition) * 0.3;
+			signMaterial.uniforms.finish.value = data.halfJumpPosition + (headset.object3D.position.z - data.halfJumpPosition) * 0.7;
 		} else {
 			const signMaterial = this.el.sceneEl.systems.materials.beatSignMaterial;
 			signMaterial.uniforms.start.value = 10000;
 			signMaterial.uniforms.finish.value = 10000;
 		}
 
+		let itsMine = this.data.type === 'mine';
 		let smallCubes = modifiers.includes('SC');
 		let proMode = modifiers.includes('PM');
 		const SCScale = 0.5;
-		let noteScale = smallCubes ? SCScale : 1;
+		let noteScale = smallCubes && !itsMine ? SCScale : 1;
 
-		if (smallCubes && this.settings.settings.showNoteModifierVisuals) {
-			this.blockEl.object3D.scale.multiplyScalar(SCScale);
+		if (smallCubes && settings.settings.showNoteModifierVisuals) {
+			this.blockEl.object3D.scale.multiplyScalar(noteScale);
 		}
 		let gameVersion = (replay.info.gameVersion || '0.0.0').split('.'); // SS doesn't have a game version
 		let oldDots =
@@ -519,8 +612,7 @@ AFRAME.registerComponent('beat', {
 
 		this.updatePosition();
 
-		if (!this.hitboxObject) {
-			let itsMine = this.data.type === 'mine';
+		if (!this.hitboxObject && (!this.replayNote.cutPoint || settings.settings.showHitboxes || !settings.settings.reducedDebris)) {
 			const hitbox = new THREE.WireframeGeometry(itsMine ? new THREE.SphereGeometry(0.18, 16, 8) : this.toBigBox(boxSettings));
 			const material = new THREE.LineBasicMaterial({
 				color: 0xff0000,
@@ -528,7 +620,7 @@ AFRAME.registerComponent('beat', {
 			});
 			const line = new THREE.LineSegments(hitbox, material);
 			line.geometry.computeBoundingBox();
-			line.visible = this.settings.settings.showHitboxes;
+			line.visible = settings.settings.showHitboxes;
 			el.object3D.add(line);
 			if (!itsMine) {
 				if (!proMode) line.position.z += 0.25 * noteScale;
@@ -540,7 +632,7 @@ AFRAME.registerComponent('beat', {
 				});
 				const line2 = new THREE.LineSegments(smallhitbox, material2);
 				line2.geometry.computeBoundingBox();
-				line2.visible = this.settings.settings.showHitboxes;
+				line2.visible = settings.settings.showHitboxes;
 
 				el.object3D.add(line2);
 
@@ -615,10 +707,8 @@ AFRAME.registerComponent('beat', {
 		}
 
 		if (this.data.type === 'sliderchain') {
-			const chainRatio = ((this.data.sliceCount - this.data.sliceIndex) / this.data.sliceCount) * 3.5;
-
-			blockEl.object3D.scale.set(1, chainRatio, 1);
-			signEl.object3D.scale.set(0.3, (1 / chainRatio) * 0.3, 1);
+			blockEl.object3D.scale.set(1, 1, 1);
+			signEl.object3D.scale.set(0.3, 0.3, 1);
 		} else {
 			// Model is 0.29 size. We make it 1.0 so we can easily scale based on 1m size.
 			blockEl.object3D.scale.set(1, 1, 1);
@@ -760,8 +850,7 @@ AFRAME.registerComponent('beat', {
 
 	postScoreEvent: function () {
 		if (!this.replayNote.time) return;
-		const timeToScore = this.replayNote.time - this.song.getCurrentTime();
-
+		const timeToScore = this.replayNote.time - song.getCurrentTime();
 		const payload = {index: this.replayNote.i};
 		const scoreChanged = () => this.el.emit('scoreChanged', payload, true);
 		if (timeToScore < 0) {
@@ -772,7 +861,7 @@ AFRAME.registerComponent('beat', {
 	},
 
 	destroyMine: function () {
-		if (!this.settings.settings.reducedDebris) {
+		if (!settings.settings.reducedDebris) {
 			for (let i = 0; i < this.mineFragments.length; i++) {
 				this.mineFragments[i].visible = true;
 			}
@@ -786,10 +875,10 @@ AFRAME.registerComponent('beat', {
 			this.returnToPool(true);
 		}
 
-		if (!this.settings.settings.noEffects) {
+		if (!settings.settings.noEffects) {
 			this.explodeEventDetail.position.copy(this.el.object3D.position);
 			this.explodeEventDetail.rotation.copy(this.randVec);
-			this.mineParticles.emit('explode', this.explodeEventDetail, false);
+			mineParticles.emit('explode', this.explodeEventDetail, false);
 		}
 	},
 
@@ -804,7 +893,7 @@ AFRAME.registerComponent('beat', {
 		var point3 = new THREE.Vector3();
 
 		return function (saberEl) {
-			if (!this.settings.settings.reducedDebris) {
+			if (!settings.settings.reducedDebris && this.partRightEl) {
 				var coplanarPoint;
 				var cutThickness = (this.cutThickness = 0.02);
 				var direction = this.cutDirection;
@@ -901,7 +990,7 @@ AFRAME.registerComponent('beat', {
 				auxObj3D.lookAt(direction);
 			} else {
 				this.destroyed = true;
-				if (!this.settings.realHitsounds && this.hitSoundState != SOUND_STATE.hitPlayed) {
+				if (!settings.realHitsounds && this.hitSoundState != SOUND_STATE.hitPlayed) {
 					this.el.object3D.visible = false;
 					this.hitSoundState = SOUND_STATE.waitingForHitSound;
 				} else {
@@ -909,7 +998,7 @@ AFRAME.registerComponent('beat', {
 				}
 			}
 
-			// if (!this.settings.settings.noEffects) {
+			// if (!settings.settings.noEffects) {
 			//   this.explodeEventDetail.position = this.el.object3D.position;
 			//   this.explodeEventDetail.rotation = auxObj3D.rotation;
 			//   this.particles.emit('explode', this.explodeEventDetail, false);
@@ -967,7 +1056,9 @@ AFRAME.registerComponent('beat', {
 			return;
 		}
 
-		this.el.sceneEl.components[this.poolName].returnEntity(this.el);
+		if (this.el.sceneEl.components[this.poolName]) {
+			this.el.sceneEl.components[this.poolName].returnEntity(this.el);
+		}
 	},
 
 	checkBigCollider: function (collider, hand, saberControls) {
@@ -981,9 +1072,7 @@ AFRAME.registerComponent('beat', {
 	},
 
 	checkCollisions: function () {
-		// const cutDirection = this.data.cutDirection;
-		const saberEls = this.saberEls;
-
+		if (!this.hitboxObject) return;
 		this.beatBigBoundingBox.copy(this.hitboxObject.geometry.boundingBox).applyMatrix4(this.hitboxObject.matrixWorld);
 		const beatBigBoundingBox = this.beatBigBoundingBox;
 
@@ -1015,8 +1104,8 @@ AFRAME.registerComponent('beat', {
 			) {
 				// Sound.
 
-				if (this.data.type !== 'sliderchain' && this.settings.realHitsounds) {
-					this.el.parentNode.components['beat-hit-sound'].playSound(this.el, this.data.cutDirection);
+				if (this.data.type !== 'sliderchain' && settings.realHitsounds) {
+					hitSound.playSound();
 				}
 
 				if (this.data.type === 'mine') {
@@ -1035,7 +1124,7 @@ AFRAME.registerComponent('beat', {
 				this.destroyBeat(saberEls[i]);
 
 				this.hitSaberEl = saberEls[i];
-				if (this.settings.settings.reducedDebris) {
+				if (settings.settings.reducedDebris) {
 					this.onEndStroke();
 				} else {
 					this.hitSaberEl.addEventListener('strokeend', this.onEndStroke, ONCE);
@@ -1101,9 +1190,6 @@ AFRAME.registerComponent('beat', {
 		// else if (score < 100) { beatScorePool = SCORE_POOL.GREAT; }
 		// else {
 		//   beatScorePool = SCORE_POOL.SUPER;
-
-		// this.superCuts[this.superCutIdx].components.supercutfx.createSuperCut(this.el.object3D.position);
-		// this.superCutIdx = (this.superCutIdx + 1) % this.superCuts.length;
 		// }
 
 		this.showScore();
@@ -1114,7 +1200,7 @@ AFRAME.registerComponent('beat', {
 		let data = this.data;
 		if (score < 0) {
 			if (score == -3) {
-				var missEl = hand === 'left' ? this.missElLeft : this.missElRight;
+				var missEl = hand === 'left' ? missElLeft : missElRight;
 				if (!missEl) {
 					return;
 				}
@@ -1140,7 +1226,7 @@ AFRAME.registerComponent('beat', {
 
 				missEl.emit('beatmiss', null, true);
 			} else if (score == -2) {
-				var wrongEl = hand === 'left' ? this.wrongElLeft : this.wrongElRight;
+				var wrongEl = hand === 'left' ? wrongElLeft : wrongElRight;
 				if (!wrongEl) {
 					return;
 				}
@@ -1170,8 +1256,8 @@ AFRAME.registerComponent('beat', {
 			const colorAndScale = this.colorAndScaleForScore(this.replayNote);
 			scoreEl.setAttribute('text', 'value', '' + score);
 
-			let duration = 500 / this.song.speed;
-			if (this.settings.settings.colorScores) {
+			let duration = 500 / song.speed;
+			if (settings.settings.colorScores) {
 				scoreEl.setAttribute('text', 'color', colorAndScale.color);
 				scoreEl.setAttribute('text', 'wrapCount', 33 - colorAndScale.scale * 15);
 				scoreEl.setAttribute('animation__motionz', 'dur', duration * 3);
@@ -1211,12 +1297,12 @@ AFRAME.registerComponent('beat', {
 			}
 			scoreEl.play();
 			scoreEl.emit('beatscorestart', null, false);
-
-			// if (score == 115 && !this.settings.settings.noEffects) {
-			//   this.superCuts[this.superCutIdx].components.supercutfx.createSuperCut(this.el.object3D.position);
-			//   this.superCutIdx = (this.superCutIdx + 1) % this.superCuts.length;
-			// }
 		}
+	},
+
+	noteJumpGravityForLineLayer: function (lineLayer, beforeJumpLineLayer) {
+		var num = ((-2 * this.data.halfJumpPosition) / this.data.speed) * 0.5;
+		return (2.0 * (highestJumpPosYForLineLayer(lineLayer) - getVerticalPosition(beforeJumpLineLayer))) / (num * num);
 	},
 
 	colorAndScaleForScore: (function () {
@@ -1252,12 +1338,12 @@ AFRAME.registerComponent('beat', {
 	checkStaticHitsound: function () {
 		if (this.data.type === 'mine' || this.hitSoundState == SOUND_STATE.hitPlayed) return;
 
-		const currentTime = this.song.getCurrentTime();
-		const noteTime = this.data.time - SWORD_OFFSET / this.data.speed;
+		const currentTime = song.getCurrentTime();
+		const noteTime = this.data.time - 0.2;
 
 		if (currentTime > noteTime) {
 			if (this.data.type !== 'sliderchain') {
-				this.el.parentNode.components['beat-hit-sound'].playSound(this.el, this.data.cutDirection);
+				hitSound.playSound();
 			}
 
 			if (this.hitSoundState == SOUND_STATE.waitingForHitSound) {
@@ -1278,7 +1364,7 @@ AFRAME.registerComponent('beat', {
 		return function (timeDelta) {
 			// Update gravity velocity.
 			this.gravityVelocity = getGravityVelocity(this.gravityVelocity, timeDelta);
-			this.el.object3D.position.y += this.gravityVelocity * (timeDelta / 1000) * this.song.speed;
+			this.el.object3D.position.y += this.gravityVelocity * (timeDelta / 1000) * song.speed;
 
 			if (this.data.type == 'mine') {
 				for (var i = 0; i < this.mineFragments.length; i++) {
@@ -1286,8 +1372,8 @@ AFRAME.registerComponent('beat', {
 					if (!fragment.visible) {
 						continue;
 					}
-					fragment.position.addScaledVector(fragment.speed, (timeDelta / 1000) * this.song.speed);
-					fragment.scale.multiplyScalar(1 - 0.03 * this.song.speed);
+					fragment.position.addScaledVector(fragment.speed, (timeDelta / 1000) * song.speed);
+					fragment.scale.multiplyScalar(1 - 0.03 * song.speed);
 
 					if (fragment.scale.y < 0.1 || this.el.object3D.position.y < -1) {
 						fragment.visible = false;
@@ -1297,21 +1383,22 @@ AFRAME.registerComponent('beat', {
 				return;
 			}
 
-			rightCutNormal.copy(this.rightCutPlane.normal).multiplyScalar(DESTROYED_SPEED * (timeDelta / 500) * this.song.speed);
+			if (!this.partRightEl) return;
+			rightCutNormal.copy(this.rightCutPlane.normal).multiplyScalar(DESTROYED_SPEED * (timeDelta / 500) * song.speed);
 			rightCutNormal.y = 0; // Y handled by gravity.
 			this.partRightEl.object3D.position.add(rightCutNormal);
 			this.partRightEl.object3D.setRotationFromAxisAngle(this.rotationAxis, rightRotation);
-			rightRotation = rightRotation >= 2 * Math.PI ? 0 : rightRotation + rotationStep * this.song.speed;
+			rightRotation = rightRotation >= 2 * Math.PI ? 0 : rightRotation + rotationStep * song.speed;
 
-			leftCutNormal.copy(this.leftCutPlane.normal).multiplyScalar(DESTROYED_SPEED * (timeDelta / 500) * this.song.speed);
+			leftCutNormal.copy(this.leftCutPlane.normal).multiplyScalar(DESTROYED_SPEED * (timeDelta / 500) * song.speed);
 			leftCutNormal.y = 0; // Y handled by gravity.
 			this.partLeftEl.object3D.position.add(leftCutNormal);
 			this.partLeftEl.object3D.setRotationFromAxisAngle(this.rotationAxis, leftRotation);
-			leftRotation = leftRotation >= 2 * Math.PI ? 0 : leftRotation + rotationStep * this.song.speed;
+			leftRotation = leftRotation >= 2 * Math.PI ? 0 : leftRotation + rotationStep * song.speed;
 
 			this.generateCutClippingPlanes();
 
-			this.returnToPoolTimer -= timeDelta * this.song.speed;
+			this.returnToPoolTimer -= timeDelta * song.speed;
 			this.backToPool = this.returnToPoolTimer <= 0 || this.el.object3D.position.y < -1;
 		};
 	})(),

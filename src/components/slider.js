@@ -1,9 +1,9 @@
-import {getHorizontalPosition, getVerticalPosition} from '../utils';
+import {getHorizontalPosition, highestJumpPosYForLineLayer, rotateAboutPoint, SWORD_OFFSET} from '../utils';
 const COLORS = require('../constants/colors.js');
 
 AFRAME.registerComponent('slider', {
 	schema: {
-		anticipationPosition: {default: 0},
+		halfJumpPosition: {default: 0},
 		color: {default: 'red', oneOf: ['red', 'blue']},
 		cutDirection: {default: 'down'},
 		tailCutDirection: {default: 'down'},
@@ -18,11 +18,14 @@ AFRAME.registerComponent('slider', {
 		time: {default: 0},
 		tailTime: {default: 0},
 		hasTailNote: {default: false},
-		anticipationTime: {default: 0},
-		warmupTime: {default: 0},
+		halfJumpDuration: {default: 0},
+		moveTime: {default: 0},
 		warmupSpeed: {default: 0},
 		blue: {default: COLORS.BEAT_BLUE},
 		red: {default: COLORS.BEAT_RED},
+
+		spawnRotation: {default: 0},
+		tailSpawnRotation: {default: 0},
 	},
 
 	cutColor: {
@@ -42,7 +45,7 @@ AFRAME.registerComponent('slider', {
 	},
 
 	init: function () {
-		this.currentRotationWarmupTime = 0;
+		this.currentRotationmoveTime = 0;
 
 		this.headset = this.el.sceneEl.querySelectorAll('.headset')[0];
 		this.song = this.el.sceneEl.components.song;
@@ -69,22 +72,28 @@ AFRAME.registerComponent('slider', {
 
 		var newPosition = 0;
 
-		var timeOffset = data.time - song.getCurrentTime() - data.anticipationTime - data.warmupTime;
+		var timeOffset = data.time - song.getCurrentTime() - data.halfJumpDuration - data.moveTime;
 
-		if (timeOffset <= -data.warmupTime) {
-			newPosition = data.anticipationPosition;
-			timeOffset += data.warmupTime;
+		if (timeOffset <= -data.moveTime) {
+			newPosition = data.halfJumpPosition;
+			timeOffset += data.moveTime;
 			newPosition += -timeOffset * data.speed;
 		} else {
-			newPosition = data.anticipationPosition + data.warmupPosition + data.warmupSpeed * -timeOffset;
+			newPosition = data.halfJumpPosition + data.warmupPosition + data.warmupSpeed * -timeOffset;
 		}
 
-		newPosition += this.headset.object3D.position.z;
-		position.z = newPosition;
+		newPosition += this.headset.object3D.position.z - SWORD_OFFSET;
+
+		if (data.spawnRotation == 0) {
+			position.z = newPosition;
+		} else {
+			var direction = this.startPosition.clone().sub(this.origin).normalize();
+			el.object3D.position.copy(direction.multiplyScalar(-newPosition).add(this.origin));
+		}
 
 		if (this.splineObject.material.uniforms.start) {
 			this.splineObject.material.uniforms.start.value = this.headset.object3D.position.z;
-			this.splineObject.material.uniforms.finish.value = data.anticipationPosition;
+			this.splineObject.material.uniforms.finish.value = data.halfJumpPosition;
 		}
 	},
 
@@ -106,7 +115,21 @@ AFRAME.registerComponent('slider', {
 		this.updateBlock();
 
 		// Set position.
-		el.object3D.position.set(0, 0, data.anticipationPosition + data.warmupPosition);
+		el.object3D.position.set(0, 0, data.halfJumpPosition + data.warmupPosition - SWORD_OFFSET);
+
+		if (data.spawnRotation) {
+			let axis = new THREE.Vector3(0, 1, 0);
+			let theta = data.spawnRotation * 0.0175;
+			let origin = new THREE.Vector3(0, 0, 0);
+
+			origin.applyAxisAngle(axis, theta);
+			this.origin = origin;
+
+			rotateAboutPoint(el.object3D, new THREE.Vector3(0, 0, this.headset.object3D.position.z), axis, theta, true);
+			el.object3D.lookAt(origin);
+			this.startPosition = el.object3D.position.clone();
+			this.startRotation = el.object3D.quaternion.clone();
+		}
 
 		// Reset the state properties.
 		this.returnToPoolTimeStart = undefined;
@@ -133,11 +156,11 @@ AFRAME.registerComponent('slider', {
 		const data = this.data;
 
 		const headX = getHorizontalPosition(data.horizontalPosition);
-		const headY = getVerticalPosition(data.verticalPosition);
+		const headY = highestJumpPosYForLineLayer(data.verticalPosition);
 		const headAngle = THREE.Math.degToRad(this.rotations[data.cutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0));
 
 		const tailX = getHorizontalPosition(data.tailHorizontalPosition);
-		const tailY = getVerticalPosition(data.tailVerticalPosition);
+		const tailY = highestJumpPosYForLineLayer(data.tailVerticalPosition);
 		const tailZ = -data.speed * (data.tailTime - data.time);
 		const tailAngle =
 			Math.PI + THREE.Math.degToRad(this.rotations[data.tailCutDirection] + (this.data.rotationOffset ? this.data.rotationOffset : 0.0));

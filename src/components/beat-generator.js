@@ -1,5 +1,5 @@
-import {BEAT_WARMUP_OFFSET, BEAT_WARMUP_SPEED, BEAT_WARMUP_TIME} from '../constants/beat';
-import {NoteCutDirection, SWORD_OFFSET, clone} from '../utils';
+const BEAT_WARMUP_SPEED = 200;
+const BEAT_WARMUP_TIME = 0.3;
 
 let skipDebug = AFRAME.utils.getUrlParameter('skip') || 0;
 skipDebug = parseInt(skipDebug, 10);
@@ -14,12 +14,6 @@ if (queryJD.length == 0) {
 	}
 }
 
-const RIDICULOUS_MAP_EX_CONSTANT = 4001;
-const WALL_HEIGHT_MIN = 0;
-const WALL_HEIGHT_MAX = 1000;
-const WALL_START_BASE = 100;
-const WALL_START_MAX = 400;
-
 /**
  * Load beat data (all the beats and such).
  */
@@ -27,8 +21,8 @@ AFRAME.registerComponent('beat-generator', {
 	dependencies: ['stage-colors'],
 
 	schema: {
-		beatWarmupTime: {default: BEAT_WARMUP_TIME},
-		beatWarmupSpeed: {default: BEAT_WARMUP_SPEED},
+		moveTime: {default: BEAT_WARMUP_TIME},
+		moveSpeed: {default: BEAT_WARMUP_SPEED},
 		difficulty: {type: 'string'},
 		isPlaying: {default: false},
 		mode: {default: 'Standard'},
@@ -48,8 +42,6 @@ AFRAME.registerComponent('beat-generator', {
 		this.beatsTime = undefined;
 		this.bpm = undefined;
 		this.stageColors = this.el.components['stage-colors'];
-		// Beats arrive at sword stroke distance synced with the music.
-		this.swordOffset = SWORD_OFFSET;
 		this.twister = document.getElementById('twister');
 		this.leftStageLasers = document.getElementById('leftStageLasers');
 		this.rightStageLasers = document.getElementById('rightStageLasers');
@@ -170,7 +162,7 @@ AFRAME.registerComponent('beat-generator', {
 
 		events.forEach(event => {
 			if ((event._type == 15 || event._type == 14) && event._value <= 24) {
-				spawnRotation += 60 - (event._value < 4 ? event._value : event._value + 1) * 15;
+				spawnRotation += (60 - (event._value < 4 ? event._value : event._value + 1) * 15) * (event._inverted ? -1 : 1);
 				this.spawnRotationKeys.push(event._songTime);
 				this.spawnRotations[event._songTime] = {rotation: spawnRotation, early: event._type == 14};
 			}
@@ -196,15 +188,22 @@ AFRAME.registerComponent('beat-generator', {
 			prevEventsTime = this.eventsTime + skipDebug;
 
 			// Get current song time.
-			this.beatsTime = song.getCurrentTime() + this.beatAnticipationTime + this.data.beatWarmupTime;
+			this.beatsTime = song.getCurrentTime() + this.halfJumpDuration + this.data.moveTime;
+
 			this.eventsTime = song.getCurrentTime();
 		} else {
 			prevBeatsTime = this.beatsPreloadTime;
 			prevEventsTime = this.beatsPreloadTime;
 
 			// Song is not playing and is preloading beats, use maintained beat time.
-			this.beatsTime = this.beatsPreloadTime + this.beatAnticipationTime + this.data.beatWarmupTime;
+			this.beatsTime = this.beatsPreloadTime + this.halfJumpDuration + this.data.moveTime;
 			this.eventsTime = song.getCurrentTime();
+		}
+
+		if (!this.isSeeking && this.beatsTime <= prevBeatsTime) {
+			this.beatsTime = prevBeatsTime;
+			this.eventsTime = prevEventsTime;
+			return;
 		}
 
 		// Load in stuff scheduled between the last timestamp and current timestamp.
@@ -368,7 +367,7 @@ AFRAME.registerComponent('beat-generator', {
 			const data = this.data;
 
 			// Apply sword offset. Blocks arrive on beat in front of the user.
-			beatObj.anticipationPosition = -this.beatAnticipationTime * this.beatSpeed - this.swordOffset;
+			beatObj.halfJumpPosition = -this.halfJumpDuration * this.beatSpeed;
 			beatObj.color = color;
 			beatObj.cutDirection = this.orientationsHumanized[note._cutDirection];
 
@@ -381,13 +380,14 @@ AFRAME.registerComponent('beat-generator', {
 			beatObj.speed = this.beatSpeed;
 			beatObj.size = 0.4;
 			beatObj.type = type;
-			beatObj.warmupPosition = -data.beatWarmupTime * data.beatWarmupSpeed;
+			beatObj.warmupPosition = -data.moveTime * data.moveSpeed;
 			beatObj.index = note._index;
 			beatObj.time = note._songTime;
 			beatObj.spawnRotation = this.getRotation(note._songTime);
-			beatObj.anticipationTime = this.beatAnticipationTime;
-			beatObj.warmupTime = data.beatWarmupTime;
-			beatObj.warmupSpeed = data.beatWarmupSpeed;
+			beatObj.halfJumpDuration = this.halfJumpDuration;
+			beatObj.moveTime = data.moveTime;
+			beatObj.warmupSpeed = data.moveSpeed;
+			beatObj.beforeJumpLineLayer = note._beforeJumpLineLayer;
 
 			if (note._sliceCount || note.sliderhead) {
 				var slider = note;
@@ -451,6 +451,10 @@ AFRAME.registerComponent('beat-generator', {
 				}
 			}
 
+			beatObj.flip = note._flipLineIndex !== undefined;
+			beatObj.flipHorizontalPosition = note._flipLineIndex;
+			beatObj.flipYSide = note._flipYSide;
+
 			beatEl.setAttribute('beat', beatObj);
 			beatEl.components.beat.onGenerate(this.mappingExtensions);
 			beatEl.play();
@@ -500,7 +504,7 @@ AFRAME.registerComponent('beat-generator', {
 			const speed = this.beatSpeed;
 
 			const durationSeconds = wall._songDuration;
-			wallObj.anticipationPosition = -this.beatAnticipationTime * this.beatSpeed - this.swordOffset;
+			wallObj.halfJumpPosition = -this.halfJumpDuration * this.beatSpeed;
 			wallObj.durationSeconds = durationSeconds;
 			wallObj.horizontalPosition = wall._lineIndex;
 			if (wall._lineLayer != undefined) {
@@ -512,15 +516,15 @@ AFRAME.registerComponent('beat-generator', {
 			}
 			wallObj.isCeiling = wall._type === 1;
 			wallObj.speed = speed;
-			wallObj.warmupPosition = -data.beatWarmupTime * data.beatWarmupSpeed;
+			wallObj.warmupPosition = -data.moveTime * data.moveSpeed;
 			// wall._width can be like 1 or 2. Map that to 0.6 thickness.
 			wallObj.width = wall._width * WALL_THICKNESS;
-			wallObj.spawnRotation = this.getRotation(wall._songTime);
 
+			wallObj.spawnRotation = this.getRotation(wall._songTime);
 			wallObj.time = wall._songTime;
-			wallObj.anticipationTime = this.beatAnticipationTime;
-			wallObj.warmupTime = data.beatWarmupTime;
-			wallObj.warmupSpeed = data.beatWarmupSpeed;
+			wallObj.halfJumpDuration = this.halfJumpDuration;
+			wallObj.moveTime = data.moveTime;
+			wallObj.warmupSpeed = data.moveSpeed;
 
 			if (this.customData && this.customData._obstacleColor) {
 				wallObj.color = this.customData._obstacleColor;
@@ -602,7 +606,7 @@ AFRAME.registerComponent('beat-generator', {
 			const data = this.data;
 
 			// Apply sword offset. Blocks arrive on beat in front of the user.
-			beatObj.anticipationPosition = -this.beatAnticipationTime * this.beatSpeed - this.swordOffset;
+			beatObj.halfJumpPosition = -this.halfJumpDuration * this.beatSpeed;
 			beatObj.color = color;
 			beatObj.cutDirection = this.orientationsHumanized[note._cutDirection];
 			beatObj.tailCutDirection = this.orientationsHumanized[note._tailCutDirection];
@@ -613,14 +617,17 @@ AFRAME.registerComponent('beat-generator', {
 				beatObj.rotationOffset = note.cutDirectionAngleOffset ? note.cutDirectionAngleOffset : 0;
 			}
 			beatObj.speed = this.beatSpeed;
-			beatObj.warmupPosition = -data.beatWarmupTime * data.beatWarmupSpeed;
+			beatObj.warmupPosition = -data.moveTime * data.moveSpeed;
 
 			beatObj.time = note._songTime;
 			beatObj.tailTime = note._songTailTime;
 			beatObj.hasTailNote = note.tail != null;
-			beatObj.anticipationTime = this.beatAnticipationTime;
-			beatObj.warmupTime = data.beatWarmupTime;
-			beatObj.warmupSpeed = data.beatWarmupSpeed;
+			beatObj.halfJumpDuration = this.halfJumpDuration;
+			beatObj.moveTime = data.moveTime;
+			beatObj.warmupSpeed = data.moveSpeed;
+
+			beatObj.spawnRotation = this.getRotation(note._songTime);
+			beatObj.tailSpawnRotation = this.getRotation(note._songTailTime);
 
 			if (this.colors['right']) {
 				beatObj.blue = this.colors['right'];
@@ -631,8 +638,12 @@ AFRAME.registerComponent('beat-generator', {
 			}
 
 			if (this.mappingExtensions) {
-				note._lineIndex = note._lineIndex < 0 ? note._lineIndex / 1000 + 1 : note._lineIndex / 1000 - 1;
-				note._lineLayer = note._lineLayer < 0 ? note._lineLayer / 1000 + 1 : note._lineLayer / 1000 - 1;
+				if (note._lineIndex <= -1000 || note._lineIndex >= 1000) {
+					note._lineIndex = note._lineIndex < 0 ? note._lineIndex / 1000 + 1 : note._lineIndex / 1000 - 1;
+				}
+				if (note._lineLayer <= -1000 || note._lineLayer >= 1000) {
+					note._lineLayer = note._lineLayer < 0 ? note._lineLayer / 1000 + 1 : note._lineLayer / 1000 - 1;
+				}
 				if (this.mappingExtensions.colWidth) {
 					beatObj.size *= this.mappingExtensions.colWidth;
 				}
@@ -659,6 +670,10 @@ AFRAME.registerComponent('beat-generator', {
 					}
 				}
 			}
+
+			beatObj.flip = note._flipLineIndex !== undefined;
+			beatObj.flipHorizontalPosition = note._flipLineIndex;
+			beatObj.flipYSide = note._flipYSide;
 
 			beatEl.setAttribute('slider', beatObj);
 			beatEl.components.slider.onGenerate(this.mappingExtensions);
@@ -727,7 +742,7 @@ AFRAME.registerComponent('beat-generator', {
 		return pool.requestEntity();
 	},
 
-	calculateJumpTime: function (bpm, njs, offset) {
+	calculateHalfJumpDuration: function (bpm, njs, offset) {
 		let halfjump = 4;
 		let num = 60 / bpm;
 
@@ -745,35 +760,37 @@ AFRAME.registerComponent('beat-generator', {
 	},
 
 	updateJD: function (newJD, itsDefault = false) {
-		const defaultJT = this.calculateJumpTime(this.bpm, this.beatSpeed, this.beatOffset);
-		const defaultJD = (60 / this.bpm) * defaultJT * this.beatSpeed * 2;
+		const defaultHalfJumpDuration = this.calculateHalfJumpDuration(this.bpm, this.beatSpeed, this.beatOffset);
+		const defaultJumpDistance = (60 / this.bpm) * defaultHalfJumpDuration * this.beatSpeed * 2;
 
 		var jt, jd;
 		if (newJD != null) {
 			jt = newJD / (60 / this.bpm) / this.beatSpeed / 2;
 			jd = newJD;
 		} else {
-			jt = defaultJT;
-			jd = defaultJD;
+			jt = defaultHalfJumpDuration;
+			jd = defaultJumpDistance;
 		}
 
-		if (!itsDefault || this.beatAnticipationTime == null) {
-			this.beatAnticipationTime = (60 / this.bpm) * jt;
-			this.el.sceneEl.emit('jdCalculated', {jd, defaultJd: itsDefault ? defaultJD : null}, false);
+		this.jumpDistance = jd;
+
+		if (!itsDefault || this.halfJumpDuration == null) {
+			this.halfJumpDuration = (60 / this.bpm) * jt;
+			this.el.sceneEl.emit('jdCalculated', {jd, defaultJd: itsDefault ? defaultJumpDistance : null}, false);
 		} else if (itsDefault) {
-			this.el.sceneEl.emit('jdCalculated', {defaultJd: defaultJD}, false);
+			this.el.sceneEl.emit('jdCalculated', {defaultJd: defaultJumpDistance}, false);
 		}
 
 		if (!itsDefault) {
 			for (let i = 0; i < this.beatContainer.children.length; i++) {
 				let child = this.beatContainer.children[i];
 				if (child.components.beat) {
-					child.components.beat.data.anticipationTime = this.beatAnticipationTime;
-					child.components.beat.data.anticipationPosition = -this.beatAnticipationTime * this.beatSpeed - this.swordOffset;
+					child.components.beat.data.halfJumpDuration = this.halfJumpDuration;
+					child.components.beat.data.halfJumpPosition = -this.halfJumpDuration * this.beatSpeed;
 				}
 				if (child.components.wall) {
-					child.components.wall.data.anticipationTime = this.beatAnticipationTime;
-					child.components.wall.data.anticipationPosition = -this.beatAnticipationTime * this.beatSpeed - this.swordOffset;
+					child.components.wall.data.halfJumpDuration = this.halfJumpDuration;
+					child.components.wall.data.halfJumpPosition = -this.halfJumpDuration * this.beatSpeed;
 				}
 			}
 		}
@@ -802,20 +819,4 @@ AFRAME.registerComponent('beat-generator', {
 
 function lessThan(a, b) {
 	return a._time - b._time;
-}
-
-/**
- * Say I have a value, 15, out of a range between 0 and 30.
- * I might want to know what that is on a scale of 1-5 instead.
- */
-function normalize(number, currentScaleMin, currentScaleMax, newScaleMin, newScaleMax) {
-	// First, normalize the value between 0 and 1.
-	const standardNormalization = (number - currentScaleMin) / (currentScaleMax - currentScaleMin);
-
-	// Next, transpose that value to our desired scale.
-	return (newScaleMax - newScaleMin) * standardNormalization + newScaleMin;
-}
-
-function roundToNearest(number, nearest) {
-	return Math.round(number / nearest) * nearest;
 }

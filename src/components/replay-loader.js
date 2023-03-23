@@ -333,18 +333,17 @@ AFRAME.registerComponent('replay-loader', {
 				const mapnote = mapnotes[group[j]];
 				for (var m = 0; m < group.length; m++) {
 					const replaynote = noteStructs[groupIndex + offset + m];
-					const lineIndex = mapnote._lineIndex;
-					const colorType = mapnote._type;
-					const cutDirection = mapnote._cutDirection;
-					const lineLayer = mapnote._lineLayer;
 					const scoringType = mapnote._scoringType ? mapnote._scoringType + 2 : 3;
 
-					if (replaynote.index == undefined && (replaynote.id == mapnote._id || replaynote.id == mapnote._idWithScoring)) {
+					if (
+						replaynote.index == undefined &&
+						(replaynote.id == mapnote._id || replaynote.id == mapnote._idWithScoring || replaynote.id == mapnote._idWithAlternativeScoring)
+					) {
 						replaynote.index = group[j];
-						replaynote.colorType = colorType;
-						replaynote.lineIndex = lineIndex;
-						replaynote.cutDirection = cutDirection;
-						replaynote.lineLayer = lineLayer;
+						replaynote.colorType = mapnote._type;
+						replaynote.lineIndex = mapnote._lineIndex;
+						replaynote.cutDirection = mapnote._cutDirection;
+						replaynote.lineLayer = mapnote._lineLayer;
 						replaynote.mapnote = mapnote;
 						replaynote.scoringType = scoringType - 2;
 						mapnote.found = true;
@@ -360,7 +359,7 @@ AFRAME.registerComponent('replay-loader', {
 					group = [];
 					break;
 				}
-				if (mapnotes[i]._songTime < noteStructs[i + offset].spawnTime - 0.0001) {
+				if (noteStructs[i].spawnTime < noteStructs[i + offset].spawnTime - 0.0001) {
 					offset--;
 					continue;
 				}
@@ -372,9 +371,9 @@ AFRAME.registerComponent('replay-loader', {
 
 				group = [i];
 				groupIndex = i;
-				groupTime = mapnotes[i]._time;
+				groupTime = mapnotes[i]._tailTime || mapnotes[i]._time;
 			} else {
-				if (Math.abs(groupTime - mapnotes[i]._time) < 0.0001) {
+				if (Math.abs(groupTime - mapnotes[i]._time) < 0.0001 || Math.abs(groupTime - mapnotes[i]._tailTime) < 0.0001) {
 					group.push(i);
 				} else {
 					processGroup();
@@ -383,7 +382,9 @@ AFRAME.registerComponent('replay-loader', {
 				}
 			}
 		}
-		processGroup();
+		if (group) {
+			processGroup();
+		}
 
 		for (var i = 0; i < noteStructs.length; i++) {
 			if (noteStructs[i].index == undefined) {
@@ -441,12 +442,20 @@ AFRAME.registerComponent('replay-loader', {
 				combo = 0;
 				misses++;
 				switch (note.score) {
-					case -2:
-						energy -= 0.1;
+					case -2: // badcut
+						if (note.scoringType == ScoringType.BurstSliderElement) {
+							energy -= 0.025;
+						} else {
+							energy -= 0.1;
+						}
 						break;
-					case -4:
-					case -3:
-						energy -= 0.15;
+					case -3: // miss
+					case -4: // bomb
+						if (note.scoringType == ScoringType.BurstSliderElement) {
+							energy -= 0.03;
+						} else {
+							energy -= 0.15;
+						}
 						break;
 
 					default:
@@ -455,7 +464,11 @@ AFRAME.registerComponent('replay-loader', {
 			} else {
 				normalCounter.Increase();
 				score += normalCounter.Multiplier * note.score;
-				energy += 0.01;
+				if (note.scoringType == ScoringType.BurstSliderElement) {
+					energy += 1 / 500;
+				} else {
+					energy += 0.01;
+				}
 				if (energy > 1) {
 					energy = 1;
 				}
@@ -572,6 +585,14 @@ AFRAME.registerComponent('replay-loader', {
 
 			mapnote._id = lineIndex * 1000 + lineLayer * 100 + colorType * 10 + cutDirection;
 			mapnote._idWithScoring = mapnote._id + scoringType * 10000;
+
+			var altscoringType = scoringType;
+			if (mapnote._scoringType == ScoringType.BurstSliderHead) {
+				altscoringType = ScoringType.SliderHead + 2;
+			} else if (mapnote._scoringType == ScoringType.SliderHead) {
+				altscoringType = ScoringType.BurstSliderHead + 2;
+			}
+			mapnote._idWithAlternativeScoring = mapnote._id + altscoringType * 10000;
 		});
 	},
 });

@@ -34,6 +34,7 @@ AFRAME.registerComponent('song-controls', {
 		this.customDifficultyLabels = {};
 		this.song = this.el.components.song;
 		this.settings = this.el.components.settings;
+		this.hitSound = this.el.components['beat-hit-sound'];
 		this.tick = AFRAME.utils.throttleTick(this.tick.bind(this), 100);
 
 		// Seek to ?time if specified.
@@ -43,7 +44,7 @@ AFRAME.registerComponent('song-controls', {
 				() => {
 					setTimeout(() => {
 						if (queryParamTime >= 0 && queryParamTime <= this.song.source.buffer.duration) {
-							this.seek(queryParamTime);
+							this.seek(queryParamTime, false);
 							queryParamTime = undefined;
 						}
 					}, 100);
@@ -125,7 +126,7 @@ AFRAME.registerComponent('song-controls', {
 
 		if (data.isPlaying) {
 			document.body.classList.add('isPlaying');
-		} else {
+		} else if (oldData.isPlaying) {
 			document.body.classList.remove('isPlaying');
 		}
 
@@ -135,25 +136,17 @@ AFRAME.registerComponent('song-controls', {
 			document.body.classList.remove('showControls');
 		}
 
-		document.getElementById('songImage').src = data.songImage;
-		document.getElementById('songName').innerHTML = data.songName;
-		document.getElementById('songName').setAttribute('title', data.songName);
-		document.getElementById('songSubName').innerHTML = data.songSubName;
-		document.getElementById('songSubName').setAttribute('title', data.songSubName);
-		if (data.leaderboardId.length) {
-			document.getElementById('songLink').setAttribute('href', 'https://beatleader.xyz/leaderboard/global/' + data.leaderboardId);
-		} else {
-			document.getElementById('songLink').setAttribute('href', 'https://beatsaver.com/maps/' + data.songId);
-		}
-
-		// document.getElementById('controlsMode').innerHTML = data.mode;
-
-		if ((oldData.difficulty && oldData.difficulty !== data.difficulty) || (oldData.mode && oldData.mode !== data.mode)) {
-			removeTimeQueryParam();
-		}
-
-		if (oldData.mode && oldData.mode !== data.mode) {
-			this.updateDifficultyOptions();
+		if (data.songImage != oldData.songImage) {
+			document.getElementById('songImage').src = data.songImage;
+			document.getElementById('songName').innerHTML = data.songName;
+			document.getElementById('songName').setAttribute('title', data.songName);
+			document.getElementById('songSubName').innerHTML = data.songSubName;
+			document.getElementById('songSubName').setAttribute('title', data.songSubName);
+			if (data.leaderboardId.length) {
+				document.getElementById('songLink').setAttribute('href', 'https://beatleader.xyz/leaderboard/global/' + data.leaderboardId);
+			} else {
+				document.getElementById('songLink').setAttribute('href', 'https://beatsaver.com/maps/' + data.songId);
+			}
 		}
 	},
 
@@ -388,6 +381,7 @@ AFRAME.registerComponent('song-controls', {
 		this.el.sceneEl.addEventListener('gamemenurestart', e => {
 			this.finished = false;
 			togglePause(true);
+			this.el.components['beat-generator'].seek(0);
 		});
 		this.el.sceneEl.addEventListener('usergesturereceive', e => {
 			if (!this.song.data.isPaused) {
@@ -831,6 +825,40 @@ AFRAME.registerComponent('song-controls', {
 		} else {
 			dcorner.style.display = 'block';
 		}
+
+		let hitSoundButton = document.getElementById('hitsounds-button');
+		let resetHitsounds = document.getElementById('resetHitsounds');
+
+		if (this.settings.settings.hitsoundName.length) {
+			hitSoundButton.innerText = this.settings.settings.hitsoundName;
+			resetHitsounds.style.display = 'block';
+		}
+
+		let hitSoundPicker = document.getElementById('hitSoundPicker');
+		hitSoundPicker.addEventListener('input', e => {
+			let sound = e.target.files[0];
+			if (!sound) return;
+
+			const dataArrayReader = new FileReader();
+			dataArrayReader.onload = e => {
+				this.settings.settings.hitsoundName = sound.name;
+				hitSoundButton.innerText = sound.name;
+				resetHitsounds.style.display = 'block';
+				this.settings.settings.hitSound = Buffer.from(e.target.result).toString('base64');
+				this.settings.sync();
+
+				this.hitSound.refreshBuffer();
+			};
+			dataArrayReader.readAsArrayBuffer(sound);
+		});
+
+		resetHitsounds.addEventListener('click', e => {
+			this.settings.resetHitsound();
+			this.hitSound.refreshBuffer();
+
+			hitSoundButton.innerText = 'Change hitsounds';
+			resetHitsounds.style.display = 'none';
+		});
 	},
 
 	getColors: completion => {
@@ -974,7 +1002,7 @@ AFRAME.registerComponent('song-controls', {
 		this.songProgress.innerHTML = formatSeconds(this.song.getCurrentTime());
 	},
 
-	seek: function (time) {
+	seek: function (time, clearBeats = true) {
 		this.song.stopAudio();
 
 		// Get new audio buffer source (needed every time audio is stopped).
@@ -986,8 +1014,10 @@ AFRAME.registerComponent('song-controls', {
 
 				this.song.startAudio(time);
 
-				// Tell beat generator about seek.
-				this.el.components['beat-generator'].seek(time);
+				if (clearBeats) {
+					// Tell beat generator about seek.
+					this.el.components['beat-generator'].seek(time);
+				}
 
 				this.updatePlayhead(true);
 			},
@@ -1073,7 +1103,7 @@ AFRAME.registerComponent('song-controls', {
 			this.settings.settings.hitSoundVolume = hitsoundSlider.value;
 
 			this.settings.sync();
-			document.getElementById('beatContainer').components['beat-hit-sound'].setVolume(hitsoundSlider.value);
+			this.hitSound.setVolume(hitsoundSlider.value);
 		};
 
 		let masterVolumeHandler = () => {
@@ -1098,7 +1128,6 @@ AFRAME.registerComponent('song-controls', {
 		musicSlider.value = this.settings.settings.volume;
 		hitsoundSlider.value = this.settings.settings.hitSoundVolume;
 		this.soundKoeff = hitsoundSlider.value / Math.max(musicSlider.value, 0.01);
-		document.getElementById('beatContainer').components['beat-hit-sound'].setVolume(hitsoundSlider.value);
 
 		[volumeSlider, hitsoundSlider, musicSlider].forEach(el => {
 			el.addEventListener('wheel', function (e) {
@@ -1169,6 +1198,17 @@ AFRAME.registerComponent('song-controls', {
 				}
 				volumeHandler();
 			}
+
+			if (e.keyCode === 72) {
+				// h
+
+				if (!this.data.showControls) {
+					document.body.classList.add('showControls');
+				} else {
+					document.body.classList.remove('showControls');
+				}
+				this.data.showControls = !this.data.showControls;
+			}
 		});
 	},
 	setupOrtoCameraControls: function () {
@@ -1221,35 +1261,6 @@ AFRAME.registerComponent('song-controls', {
 	},
 });
 
-function truncate(str, length) {
-	if (!str) {
-		return '';
-	}
-	if (str.length >= length) {
-		return str.substring(0, length - 2) + '..';
-	}
-	return str;
-}
-
-const timeRe = /time=\d+/;
-function setTimeQueryParam(time) {
-	time = parseInt(time);
-	let search = window.location.search.toString();
-	if (search) {
-		if (search.match(timeRe)) {
-			search = search.replace(timeRe, `time=${time}`);
-		} else {
-			search += `&time=${time}`;
-		}
-	} else {
-		search = `?time=${time}`;
-	}
-
-	let url = `${window.location.protocol}//${window.location.host}${window.location.pathname}`;
-	url += search;
-	window.history.pushState({path: url}, '', url);
-}
-
 function formatSeconds(time, precise) {
 	// Hours, minutes, and seconds.
 	const hrs = ~~(time / 3600);
@@ -1267,14 +1278,6 @@ function formatSeconds(time, precise) {
 		ret += '.' + Math.round((time - Math.floor(time)) * 1000);
 	}
 	return ret;
-}
-
-function removeTimeQueryParam() {
-	let search = window.location.search.toString();
-	search = search.replace(timeRe, '');
-	let url = `${window.location.protocol}//${window.location.host}${window.location.pathname}`;
-	url += search;
-	window.history.pushState({path: url}, '', url);
 }
 
 const diffColors = {

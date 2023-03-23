@@ -1,7 +1,3 @@
-function beatsaverCdnCors(url) {
-	return url.replace('https://eu.cdn.beatsaver.com/', '/cors/beat-saver-cdn/');
-}
-
 // From game
 const _noteLinesCount = 4;
 const _noteLinesDistance = 0.6;
@@ -10,13 +6,24 @@ function getHorizontalPosition(lineIndex) {
 	return (-(_noteLinesCount - 1) * 0.5 + lineIndex) * _noteLinesDistance;
 }
 
+// 0.85 1.4 1.9
+function highestJumpPosYForLineLayer(lineLayer) {
+	return 0.6 * (lineLayer + 1) + 0.05 * (5 - lineLayer - (lineLayer > 1 ? 1 : 0));
+}
+// 0.25 0.85 1.45
 function getVerticalPosition(lineLayer) {
-	return 0.25 + 0.6 * (lineLayer + 1) - lineLayer * 0.05;
+	return 0.25 + 0.6 * lineLayer;
 }
 
 function get2DNoteOffset(noteLineIndex, noteLineLayer) {
 	return new THREE.Vector2(getHorizontalPosition(noteLineIndex), getVerticalPosition(noteLineLayer));
 }
+
+const NoteLineLayer = {
+	Base: 0,
+	Upper: 1,
+	Top: 2,
+};
 
 const NoteCutDirection = {
 	Up: 0,
@@ -48,7 +55,7 @@ const ScoringType = {
 	BurstSliderElement: 5,
 };
 
-const SWORD_OFFSET = 0.8;
+const SWORD_OFFSET = 0.65;
 
 function mirrorDirection(cutDirection) {
 	switch (cutDirection) {
@@ -154,14 +161,39 @@ function BezierCurve(p0, p1, p2, t) {
 	const tangent = new THREE.Vector2()
 		.subVectors(p1, p0)
 		.multiplyScalar(2.0 * (1.0 - t))
-		.multiply(new THREE.Vector2().subVectors(p2, p1).multiplyScalar(2.0 * t));
+		.addScaledVector(new THREE.Vector2().subVectors(p2, p1), 2.0 * t);
 
 	return [pos, tangent];
 }
 
-module.exports.beatsaverCdnCors = beatsaverCdnCors;
+function LerpUnclamped(a, b, t) {
+	return a + (b - a) * t;
+}
+
+// obj - your object (THREE.Object3D or derived)
+// point - the point of rotation (THREE.Vector3)
+// axis - the axis of rotation (normalized THREE.Vector3)
+// theta - radian value of rotation
+// pointIsWorld - boolean indicating the point is in world coordinates (default = false)
+function rotateAboutPoint(obj, point, axis, theta, pointIsWorld) {
+	pointIsWorld = pointIsWorld === undefined ? false : pointIsWorld;
+
+	if (pointIsWorld) {
+		obj.parent.localToWorld(obj.position); // compensate for world coordinate
+	}
+
+	obj.position.sub(point); // remove the offset
+	obj.position.applyAxisAngle(axis, theta); // rotate the POSITION
+	obj.position.add(point); // re-add the offset
+
+	if (pointIsWorld) {
+		obj.parent.worldToLocal(obj.position); // undo world coordinates compensation
+	}
+}
+
 module.exports.getHorizontalPosition = getHorizontalPosition;
 module.exports.getVerticalPosition = getVerticalPosition;
+module.exports.highestJumpPosYForLineLayer = highestJumpPosYForLineLayer;
 module.exports.get2DNoteOffset = get2DNoteOffset;
 module.exports.directionVector = directionVector;
 module.exports.NoteCutDirection = NoteCutDirection;
@@ -175,3 +207,6 @@ module.exports.SWORD_OFFSET = SWORD_OFFSET;
 module.exports.difficultyFromName = difficultyFromName;
 module.exports.ScoringType = ScoringType;
 module.exports.BezierCurve = BezierCurve;
+module.exports.NoteLineLayer = NoteLineLayer;
+module.exports.rotateAboutPoint = rotateAboutPoint;
+module.exports.LerpUnclamped = LerpUnclamped;

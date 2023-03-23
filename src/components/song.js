@@ -61,6 +61,7 @@ AFRAME.registerComponent('song', {
 		this.songLoadingIndicator = document.getElementById('songLoadingIndicator');
 		this.speed = songSpeed;
 		this.hasReceivedUserGesture = false;
+		this.hitSound = this.el.components['beat-hit-sound'];
 
 		this.audioAnalyser.gainNode.gain.value = this.el.sceneEl.components.settings.settings.volume || BASE_VOLUME;
 
@@ -70,10 +71,14 @@ AFRAME.registerComponent('song', {
 
 		const gestureListener = () => {
 			this.hasReceivedUserGesture = true;
+
 			this.audioAnalyser.suspendContext();
 			this.audioAnalyser.resumeContext();
 
-			if (this.data.isPaused) {
+			this.hitSound.suspendContext();
+			this.hitSound.resumeContext();
+
+			if (this.data.isPaused && this.data.isBeatsPreloaded) {
 				this.startAudio();
 			}
 

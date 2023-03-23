@@ -55,6 +55,16 @@ function upgrade(map) {
 				_floatValue: event['f'],
 			});
 		});
+		map['rotationEvents'].forEach(event => {
+			var value = (event['r'] - 60) / -15;
+
+			events.push({
+				_time: event['b'],
+				_type: event['e'] == 1 ? 15 : 14,
+				_value: value < 4 ? value : value - 1,
+				_inverted: true,
+			});
+		});
 
 		map['_events'] = events;
 
@@ -173,8 +183,72 @@ function processNotesByColorType(notesWithTheSameColorTypeList) {
 	}
 }
 
-function calculateRotationOffsets(map) {
-	var group, groupTime;
+function SetNoteFlipToNote(thisNote, targetNote) {
+	thisNote._flipLineIndex = targetNote._lineIndex;
+	thisNote._flipYSide = thisNote._lineIndex > targetNote._lineIndex ? 1 : -1;
+	if (
+		(thisNote._lineIndex <= targetNote._lineIndex || thisNote._lineLayer >= targetNote._lineLayer) &&
+		(thisNote._lineIndex >= targetNote._lineIndex || thisNote._lineLayer <= targetNote._lineLayer)
+	)
+		return;
+	thisNote._flipYSide *= -1;
+}
+
+var columns = {};
+
+function addBeforeJumpLineLayer(currentTimeSlice) {
+	columns = {};
+	currentTimeSlice.forEach(element => {
+		if (columns[element._lineIndex]) {
+			columns[element._lineIndex].push(element);
+		} else {
+			columns[element._lineIndex] = [element];
+		}
+	});
+
+	Object.keys(columns).forEach(key => {
+		var column = columns[key];
+		column.sort((a, b) => a._lineLayer - b._lineLayer);
+		column.forEach((element, index) => {
+			element._beforeJumpLineLayer = index;
+		});
+	});
+}
+
+function addRabbitJumps(currentTimeSlice, currentTimeSliceTime, previousTimeSlice) {
+	if (previousTimeSlice) {
+		previousTimeSlice.forEach(noteData => {
+			noteData._timeToNextColorNote = currentTimeSliceTime - noteData._time;
+		});
+	}
+
+	if (currentTimeSlice.length != 2) return;
+
+	// uh oh what a condition
+	// if (items.length != 2
+	// 	|| (Math.abs(this._currentTimeSliceAllNotesAndSliders.time - currentTimeSliceTime) >= 1.0 / 1000.0
+	// 		|| !this._currentTimeSliceAllNotesAndSliders.items.Any<BeatmapDataItem>(
+	// 			(item => item is SliderData
+	// 			|| item is BeatmapObjectsInTimeRowProcessor.SliderTailData))
+	// 			? (this._unprocessedSliderTails.Any<SliderData>((tail =>
+	// 				Math.Abs(tail.tailTime - currentTimeSliceTime) < 1.0 / 1000.0)) ? 1 : 0) : 1) != 0)
+	//   return;
+	const targetNote1 = currentTimeSlice[0];
+	const targetNote2 = currentTimeSlice[1];
+	if (
+		targetNote1._type == targetNote2._type ||
+		((targetNote1._type != 0 || targetNote1._lineIndex <= targetNote2._lineIndex) &&
+			(targetNote1._type != 1 || targetNote1._lineIndex >= targetNote2._lineIndex))
+	)
+		return;
+	if (targetNote1._scoringType != ScoringType.Normal || targetNote2._scoringType != ScoringType.Normal) return;
+
+	SetNoteFlipToNote(targetNote1, targetNote2);
+	SetNoteFlipToNote(targetNote2, targetNote1);
+}
+
+function processTimingGroups(map) {
+	var group, groupTime, previousGroup;
 
 	const processGroup = () => {
 		var leftNotes = [];
@@ -186,6 +260,9 @@ function calculateRotationOffsets(map) {
 
 			processNotesByColorType(leftNotes);
 			processNotesByColorType(rightNotes);
+
+			addRabbitJumps(group, groupTime, previousGroup);
+			previousGroup = group;
 		}
 	};
 
@@ -208,10 +285,38 @@ function calculateRotationOffsets(map) {
 		}
 	}
 	processGroup();
+
+	group = null;
+	for (var i = 0; i < notes.length; i++) {
+		const note = notes[i];
+		if (!group) {
+			group = [note];
+			groupTime = note._time;
+		} else {
+			if (Math.abs(groupTime - note._time) < 0.0001) {
+				group.push(note);
+			} else {
+				addBeforeJumpLineLayer(group);
+				group = null;
+				i--;
+			}
+		}
+	}
+	if (group) {
+		addBeforeJumpLineLayer(group);
+	}
 }
 
 function addScoringTypeAndChains(map) {
 	const mapnotes = map._notes;
+
+	mapnotes.forEach(note => {
+		if (note._type == 1 || note._type == 0) {
+			note._scoringType = ScoringType.Normal;
+		} else {
+			note._scoringType = ScoringType.Ignore;
+		}
+	});
 
 	map._sliders.forEach(slider => {
 		var head = mapnotes.find(n => n._time == slider._time && n._lineIndex == slider._lineIndex && n._lineLayer == slider._lineLayer);
@@ -249,12 +354,12 @@ function addScoringTypeAndChains(map) {
 			}
 			head.sliderhead = slider;
 		}
-		for (var i = 0; i < slider._sliceCount - 1; i++) {
+		for (var i = 1; i < slider._sliceCount; i++) {
 			let chain = clone(slider);
 			chain._headCutDirection = slider._cutDirection;
 			chain._cutDirection = ANY_CUT_DIRECTION;
 			chain._scoringType = ScoringType.BurstSliderElement;
-			chain._sliceIndex = i + 1;
+			chain._sliceIndex = i;
 
 			chains.push(chain);
 		}
@@ -302,9 +407,13 @@ function calculateSongTimes(map, info) {
 			bpmChangeDataList = [{bpmChangeStartTime: 0.0, bpmChangeStartBpmTime: 0.0, bpm: startBpm}];
 		}
 		for (var index = bpmEvents[0]._time == 0 ? 1 : 0; index < bpmEvents.length; ++index) {
-			const bpmChangeData = bpmChangeDataList[bpmChangeDataList.length - 1];
+			var bpmChangeData = bpmChangeDataList[bpmChangeDataList.length - 1];
 			const beat = bpmEvents[index]._time;
 			const bpm = bpmEvents[index]._bpm;
+
+			if (bpmChangeData == null) {
+				bpmChangeData = {bpmChangeStartTime: 0.0, bpmChangeStartBpmTime: 0.0, bpm: startBpm};
+			}
 
 			bpmChangeDataList.push({
 				bpmChangeStartTime: bpmChangeData.bpmChangeStartTime + ((beat - bpmChangeData.bpmChangeStartBpmTime) / bpmChangeData.bpm) * 60.0,
@@ -333,8 +442,9 @@ function calculateSongTimes(map, info) {
 function postprocess(map, info) {
 	var result = upgrade(map);
 
-	calculateRotationOffsets(result);
 	addScoringTypeAndChains(result);
+	processTimingGroups(result);
+
 	filterFakeNotes(result);
 	indexNotes(result);
 	calculateSongTimes(result, info);

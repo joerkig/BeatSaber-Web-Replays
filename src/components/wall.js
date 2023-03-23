@@ -1,4 +1,4 @@
-import {getHorizontalPosition, getVerticalPosition} from '../utils';
+import {getHorizontalPosition, highestJumpPosYForLineLayer, rotateAboutPoint, SWORD_OFFSET} from '../utils';
 
 // So wall does not clip the stage ground.
 const RAISE_Y_OFFSET = 0.15;
@@ -12,7 +12,7 @@ const _noteLinesDistance = 0.6;
  */
 AFRAME.registerComponent('wall', {
 	schema: {
-		anticipationPosition: {default: 0},
+		halfJumpPosition: {default: 0},
 		durationSeconds: {default: 0},
 		height: {default: 1.3},
 		horizontalPosition: {default: 1},
@@ -25,8 +25,8 @@ AFRAME.registerComponent('wall', {
 		positionOffset: {default: 0},
 		spawnRotation: {default: 0},
 		time: {default: 0},
-		anticipationTime: {default: 0},
-		warmupTime: {default: 0},
+		halfJumpDuration: {default: 0},
+		moveTime: {default: 0},
 		warmupSpeed: {default: 0},
 	},
 
@@ -49,17 +49,17 @@ AFRAME.registerComponent('wall', {
 		var newPosition = 0;
 		const currentTime = song.getCurrentTime();
 
-		var timeOffset = data.time - currentTime - data.anticipationTime - data.warmupTime;
+		var timeOffset = data.time - currentTime - data.halfJumpDuration - data.moveTime;
 
-		if (timeOffset <= -data.warmupTime) {
-			newPosition = data.anticipationPosition - halfDepth;
-			timeOffset += data.warmupTime;
+		if (timeOffset <= -data.moveTime) {
+			newPosition = data.halfJumpPosition - halfDepth;
+			timeOffset += data.moveTime;
 			newPosition += -timeOffset * data.speed;
 		} else {
-			newPosition = data.anticipationPosition - halfDepth + data.warmupPosition + data.warmupSpeed * -timeOffset;
+			newPosition = data.halfJumpPosition - halfDepth + data.warmupPosition + data.warmupSpeed * -timeOffset;
 		}
 
-		newPosition += this.headset.object3D.position.z;
+		newPosition += this.headset.object3D.position.z - SWORD_OFFSET;
 
 		var direction = this.startPosition.clone().sub(this.origin).normalize();
 		this.el.object3D.position.copy(direction.multiplyScalar(-newPosition).add(this.origin));
@@ -99,22 +99,26 @@ AFRAME.registerComponent('wall', {
 		const halfDepth = (data.durationSeconds * data.speed) / 2;
 		var origin;
 		if (data.isV3) {
-			let y = Math.max(getVerticalPosition(data.verticalPosition) + RAISE_Y_OFFSET, 0.1);
-			origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25, y, 0);
+			let y = Math.max(highestJumpPosYForLineLayer(data.verticalPosition) + RAISE_Y_OFFSET, 0.1);
+			origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25, y, -SWORD_OFFSET);
 
-			el.object3D.position.set(origin.x, origin.y, data.anticipationPosition + data.warmupPosition - halfDepth);
+			el.object3D.position.set(origin.x, origin.y, origin.z + data.halfJumpPosition + data.warmupPosition - halfDepth);
 			el.object3D.scale.set(width, Math.min(data.height * _noteLinesDistance, 3.1 - y), data.durationSeconds * data.speed);
 		} else {
 			if (data.isCeiling) {
-				origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25, CEILING_HEIGHT, 0);
+				origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25, CEILING_HEIGHT, -SWORD_OFFSET);
 
-				el.object3D.position.set(origin.x, origin.y, data.anticipationPosition + data.warmupPosition - halfDepth);
+				el.object3D.position.set(origin.x, origin.y, origin.z + data.halfJumpPosition + data.warmupPosition - halfDepth);
 				el.object3D.scale.set(width, CEILING_THICKNESS, data.durationSeconds * data.speed);
 			} else {
 				// Box geometry is constructed from the local 0,0,0 growing in the positive and negative
 				// x and z axis. We have to shift by half width and depth to be positioned correctly.
-				origin = new THREE.Vector3(getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25, data.height + RAISE_Y_OFFSET, 0);
-				el.object3D.position.set(origin.x, origin.y, data.anticipationPosition + data.warmupPosition - halfDepth);
+				origin = new THREE.Vector3(
+					getHorizontalPosition(data.horizontalPosition) + width / 2 - 0.25,
+					data.height + RAISE_Y_OFFSET,
+					-SWORD_OFFSET
+				);
+				el.object3D.position.set(origin.x, origin.y, origin.z + data.halfJumpPosition + data.warmupPosition - halfDepth);
 				el.object3D.scale.set(width, 2.5, data.durationSeconds * data.speed);
 			}
 		}
@@ -125,7 +129,7 @@ AFRAME.registerComponent('wall', {
 		origin.applyAxisAngle(axis, theta);
 		this.origin = origin;
 
-		this.rotateAboutPoint(el.object3D, new THREE.Vector3(0, 0, this.headset.object3D.position.z), axis, theta, true);
+		rotateAboutPoint(el.object3D, new THREE.Vector3(0, 0, this.headset.object3D.position.z), axis, theta, true);
 		el.object3D.lookAt(origin);
 
 		this.startPosition = el.object3D.position.clone();
@@ -140,7 +144,7 @@ AFRAME.registerComponent('wall', {
 		el.object3D.position.set(
 			getHorizontalPosition(data.horizontalPosition) + (data.width - _noteLinesDistance) / 2,
 			startHeight * 0.25 + RAISE_Y_OFFSET,
-			data.anticipationPosition + data.warmupPosition - halfDepth
+			data.halfJumpPosition + data.warmupPosition - halfDepth - SWORD_OFFSET
 		);
 
 		el.object3D.scale.set(data.width * 0.98, height * 0.3, data.durationSeconds * (data.speed * this.song.speed));
