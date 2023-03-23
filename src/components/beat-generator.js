@@ -435,12 +435,19 @@ AFRAME.registerComponent('beat-generator', {
 			beatObj.noteIdWithScoring = note._idWithScoring;
 
 			if (this.noodleExtensions && note._customData) {
-				if (note._customData._position) {
-					beatObj.horizontalPosition = note._customData._position[0] + 4 / 2;
-					beatObj.verticalPosition = note._customData._position[1];
+				if (note._customData.coordinates) {
+					beatObj.horizontalPosition = note._customData.coordinates[0] + 4 / 2;
+					beatObj.verticalPosition = note._customData.coordinates[1];
+					beatObj.rotationOffset += 180
 				}
-				if (note._customData._cutDirection || note._customData._cutDirection === 0) {
-					beatObj.rotationOffset = note._customData._cutDirection;
+				else { 
+					if (note._customData._position) {
+						beatObj.horizontalPosition = note._customData._position[0] + 4 / 2;
+						beatObj.verticalPosition = note._customData._position[1];
+					}
+					if (note._customData._cutDirection || note._customData._cutDirection === 0) {
+						beatObj.rotationOffset = note._customData._cutDirection;
+					}
 				}
 			}
 
@@ -635,6 +642,23 @@ AFRAME.registerComponent('beat-generator', {
 
 			beatObj.tailHorizontalPosition = note._tailLineIndex;
 			beatObj.tailVerticalPosition = note._tailLineLayer;
+
+			if (this.noodleExtensions && note._customData) {
+				if (note._customData.coordinates) {
+					beatObj.horizontalPosition = note._customData.coordinates[0] + 4 / 2;
+					beatObj.verticalPosition = note._customData.coordinates[1];
+					beatObj.rotationOffset += 180
+				}
+				else { 
+					if (note._customData._position) {
+						beatObj.horizontalPosition = note._customData._position[0] + 4 / 2;
+						beatObj.verticalPosition = note._customData._position[1];
+					}
+					if (note._customData._cutDirection || note._customData._cutDirection === 0) {
+						beatObj.rotationOffset = note._customData._cutDirection;
+					}
+				}
+			}
 
 			beatEl.setAttribute('slider', beatObj);
 			beatEl.components.slider.onGenerate(this.mappingExtensions);

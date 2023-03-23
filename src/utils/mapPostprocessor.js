@@ -14,6 +14,7 @@ function upgrade(map) {
 				_cutDirection: note['d'],
 				_angleOffset: note['a'],
 				_scoringType: ScoringType.Normal,
+				_customData: note['customData']
 			});
 		});
 		map['bombNotes'].forEach(bomb => {
@@ -112,12 +113,23 @@ function upgrade(map) {
 }
 
 function processNoodle(map) {
+	if (map['version'] && parseInt(map['version'].split('.')[0]) == 3) {
+		[...map._notes].forEach(note => {
+			if (note._customData && note._customData._cutDirection !== undefined) {
+				note._angleOffset =
+					note._customData._cutDirection
+			}
+		});
+	}
+
+	else {
 	[...map._notes].forEach(note => {
 		if (note._customData && note._customData._cutDirection !== undefined) {
 			note._cutDirection =
 				note._cutDirection !== 8 && note._customData && note._customData._cutDirection !== undefined ? 1 : note._cutDirection;
 		}
 	});
+	}
 
 	return map;
 }
